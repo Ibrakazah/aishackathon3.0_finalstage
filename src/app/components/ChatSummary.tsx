@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { MessageSquare, TrendingUp, Users, Clock } from "lucide-react";
+import { MessageSquare, TrendingUp, Users, Clock, Trash2 } from "lucide-react";
 import { toast } from "sonner"; // Assuming sonner is installed for toast notifications
 
 interface ChatMessage {
@@ -74,11 +74,31 @@ export function ChatSummary() {
     today: messages.filter((m) => m.timestamp.includes(new Date().toISOString().split("T")[0])).length,
   };
 
+  const handleClear = async () => {
+    if (!confirm("Вы уверены, что хотите удалить все сообщения из сводки?")) return;
+    try {
+      await fetch("http://localhost:8000/api/messages", { method: "DELETE" });
+      fetchData();
+      toast.success("Все сообщения удалены");
+    } catch (e) {
+      console.error(e);
+      toast.error("Ошибка при удалении");
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      <div>
-        <h1 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Сводка чата</h1>
-        <p className="text-sm text-gray-500 dark:text-slate-400 mt-1 font-medium">Важные сообщения и уведомления из Telegram и WhatsApp</p>
+      <div className="flex justify-between items-start">
+        <div>
+          <h1 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Сводка чата</h1>
+          <p className="text-sm text-gray-500 dark:text-slate-400 mt-1 font-medium">Важные сообщения и уведомления из Telegram и WhatsApp</p>
+        </div>
+        <button 
+          onClick={handleClear}
+          className="flex items-center gap-2 px-4 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-900/20 dark:hover:bg-rose-900/30 text-rose-600 dark:text-rose-400 rounded-xl text-xs font-black uppercase tracking-widest transition-all border border-rose-100 dark:border-rose-800/50 shadow-sm"
+        >
+          <Trash2 className="w-4 h-4" /> Очистить всё
+        </button>
       </div>
 
       {/* Статистика */}

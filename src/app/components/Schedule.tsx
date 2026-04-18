@@ -59,8 +59,10 @@ function getTeacherCompetencies(data: typeof REAL_SCHEDULE_DATA): Record<string,
 const TEACHER_COMPETENCIES = getTeacherCompetencies(REAL_SCHEDULE_DATA);
 
 export function Schedule() {
-  const [viewMode, setViewMode] = useState<"class" | "school">("class");
-  const [selectedClass, setSelectedClass] = useState(ALL_CLASSES[0]);
+  const [scheduleMode, setScheduleMode] = useState<"classic" | "lent">("classic");
+  const [showConstraints, setShowConstraints] = useState(false);
+  const [maxTeacherLoad, setMaxTeacherLoad] = useState(6);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [scheduleData, setScheduleData] = useState(REAL_SCHEDULE_DATA);
   const [originalData] = useState(REAL_SCHEDULE_DATA); // keep copy for undo
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -91,6 +93,56 @@ export function Schedule() {
 
   const handleSave = () => {
     if (!editingCell) return;
+    setValidationError(null);
+
+    const checkConstraints = (): boolean => {
+      // 1. Room Double Booking
+      if (editForm.room && !editForm.room.toLowerCase().includes("спортзал") && editForm.room !== "СВОБОДНЫЙ КАБ.") {
+        for (const cKey in scheduleData) {
+          if (cKey !== editingCell.classKey) {
+            const existingCell = scheduleData[cKey]?.[editingCell.day]?.[editingCell.time];
+            if (existingCell && existingCell.room === editForm.room) {
+              setValidationError(`HARD BLOCK: Кабинет ${editForm.room} уже занят классом ${cKey} в это время.`);
+              return false;
+            }
+          }
+        }
+      }
+      
+      // 2. Teacher Double Booking & Load Limit
+      if (editForm.teacher && editForm.teacher.trim() !== "") {
+        let teacherCountToday = 0;
+        
+        for (const cKey in scheduleData) {
+          // Check simultaneous lessons
+          if (cKey !== editingCell.classKey) {
+            const existingCell = scheduleData[cKey]?.[editingCell.day]?.[editingCell.time];
+            if (existingCell && existingCell.teacher === editForm.teacher) {
+              setValidationError(`HARD BLOCK: Учитель ${editForm.teacher} уже ведет урок в ${cKey} в это время.`);
+              return false;
+            }
+          }
+          // Count total load for the day
+          if (scheduleData[cKey]?.[editingCell.day]) {
+            Object.values(scheduleData[cKey][editingCell.day]).forEach((cell: any) => {
+               if (cell && cell.teacher === editForm.teacher) teacherCountToday++;
+            });
+          }
+        }
+
+        if (teacherCountToday >= maxTeacherLoad) {
+           setValidationError(`HARD BLOCK: Лимит нагрузки. У ${editForm.teacher} уже ${teacherCountToday} уроков в ${editingCell.day} (Максимум ${maxTeacherLoad}).`);
+           return false;
+        }
+      }
+      return true;
+    };
+
+    if (!checkConstraints()) {
+       setTimeout(() => setValidationError(null), 5000);
+       return; // Abort save
+    }
+
     setScheduleData(prev => ({
       ...prev,
       [editingCell.classKey]: {
@@ -340,29 +392,61 @@ export function Schedule() {
             )}
 
             <div className="flex bg-gray-100 dark:bg-slate-800 p-1 rounded-xl border border-gray-200 dark:border-slate-700">
-              <button onClick={() => setViewMode("class")} className={`px-4 py-2 rounded-lg text-xs font-black transition-all ${viewMode === "class" ? "bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}>КЛАССЫ</button>
-              <button onClick={() => setViewMode("school")} className={`px-4 py-2 rounded-lg text-xs font-black transition-all ${viewMode === "school" ? "bg-white dark:bg-slate-900 text-green-600 dark:text-green-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}>ОБЩИЙ ВИД</button>
+              <button onClick={() => setScheduleMode("classic")} className={`px-4 py-2 rounded-lg text-xs font-black transition-all ${scheduleMode === "classic" ? "bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}>КЛАССИКА</button>
+              <button onClick={() => setScheduleMode("lent")} className={`px-4 py-2 rounded-lg text-xs font-black transition-all ${scheduleMode === "lent" ? "bg-white dark:bg-slate-900 text-purple-600 dark:text-purple-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}>ЛЕНТЫ (ERP)</button>
             </div>
 
-            {viewMode === "class" && (
-              <select value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)} className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 px-3 py-2 rounded-xl text-xs font-bold shadow-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-white">
-                {ALL_CLASSES.map(cls => <option key={cls} value={cls}>{cls} параллель</option>)}
-              </select>
-            )}
+            <button onClick={() => setShowConstraints(!showConstraints)} className={`px-4 py-2 rounded-xl border text-xs font-black transition-all shadow-sm ${showConstraints ? "bg-orange-500 text-white border-orange-600" : "bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-800 hover:bg-orange-100"}`}>
+               ОГРАНИЧЕНИЯ
+            </button>
 
-            {viewMode === "school" && (
-              <div className="flex items-center gap-1 bg-gray-50 dark:bg-slate-800 px-2 py-1 rounded-xl border border-gray-200 dark:border-slate-700">
-                <button onClick={() => setZoomLevel(prev => Math.max(0.4, prev - 0.1))} className="p-1 text-gray-400 hover:text-blue-600"><ZoomOut className="w-4 h-4" /></button>
-                <span className="text-[10px] font-black w-10 text-center dark:text-slate-400 tracking-tighter">{Math.round(zoomLevel * 100)}%</span>
-                <button onClick={() => setZoomLevel(prev => Math.min(1.2, prev + 0.1))} className="p-1 text-gray-400 hover:text-blue-600"><ZoomIn className="w-4 h-4" /></button>
-              </div>
-            )}
+            <div className="flex items-center gap-1 bg-gray-50 dark:bg-slate-800 px-2 py-1 rounded-xl border border-gray-200 dark:border-slate-700">
+              <button onClick={() => setZoomLevel(prev => Math.max(0.4, prev - 0.1))} className="p-1 text-gray-400 hover:text-blue-600"><ZoomOut className="w-4 h-4" /></button>
+              <span className="text-[10px] font-black w-10 text-center dark:text-slate-400 tracking-tighter">{Math.round(zoomLevel * 100)}%</span>
+              <button onClick={() => setZoomLevel(prev => Math.min(1.2, prev + 0.1))} className="p-1 text-gray-400 hover:text-blue-600"><ZoomIn className="w-4 h-4" /></button>
+            </div>
 
             <button className="flex items-center gap-2 px-5 py-2.5 bg-gray-900 dark:bg-blue-600 text-white rounded-xl hover:scale-105 transition-all shadow-xl font-bold text-xs uppercase tracking-widest active:scale-95">
               <Save className="w-4 h-4" /> Сохранить
             </button>
           </div>
         </div>
+
+        {validationError && (
+          <div className="fixed top-20 right-8 z-[100] bg-red-600 text-white px-6 py-4 rounded-2xl shadow-2xl shadow-red-600/30 animate-in slide-in-from-top-4 flex flex-col max-w-md border border-red-400">
+            <div className="flex items-center gap-3">
+               <AlertTriangle className="w-6 h-6 animate-pulse" />
+               <span className="font-black text-sm uppercase tracking-widest">Блок. Конфликт</span>
+            </div>
+            <p className="mt-2 text-sm font-bold opacity-90 leading-tight">{validationError}</p>
+          </div>
+        )}
+
+        {/* ═══════════════════════════════════════════ */}
+        {/* CONSTRAINTS PANEL                           */}
+        {/* ═══════════════════════════════════════════ */}
+        {showConstraints && (
+           <div className="px-6 pb-6 pt-2 border-t border-gray-100 dark:border-slate-800 animate-in slide-in-from-top duration-300">
+             <div className="bg-orange-50 dark:bg-orange-950/30 rounded-2xl p-6 shadow-inner border border-orange-200 dark:border-orange-900/50">
+                <h3 className="font-black text-orange-800 dark:text-orange-400 uppercase tracking-widest text-sm mb-4">Настройка глобальных ограничений</h3>
+                <div className="flex items-center gap-6">
+                   <div className="flex items-center gap-3 bg-white dark:bg-slate-900 px-4 py-3 rounded-xl border border-orange-100 dark:border-orange-900 border-l-4 border-l-orange-500">
+                      <span className="text-xs font-bold text-gray-600 dark:text-slate-300">Макс. уроков в день для учителя:</span>
+                      <input 
+                         type="number" 
+                         value={maxTeacherLoad} 
+                         onChange={e => setMaxTeacherLoad(Number(e.target.value))}
+                         className="w-16 bg-orange-100 dark:bg-slate-800 px-2 py-1 flex text-center font-black rounded outline-none border focus:border-orange-500 text-orange-900 dark:text-orange-300"
+                         min="2" max="10"
+                      />
+                   </div>
+                   <p className="text-xs text-orange-600/80 dark:text-orange-400/80 font-bold max-w-sm">
+                      * Если перетащить (или назначить) учителя сверх этой нормы, система выдаст HARD BLOCK и не сохранит расписание.
+                   </p>
+                </div>
+             </div>
+           </div>
+        )}
 
         {/* ═══════════════════════════════════════════ */}
         {/* AI PANEL (collapsible)                      */}
@@ -549,39 +633,9 @@ export function Schedule() {
       {/* SCHEDULE TABLE                              */}
       {/* ═══════════════════════════════════════════ */}
       <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-gray-200 dark:border-slate-800 overflow-hidden relative min-h-[600px] transition-colors duration-500">
-        <div className="overflow-x-auto">
-          {viewMode === "class" ? (
-            <table className="w-full border-collapse">
-              <thead className="bg-blue-600 dark:bg-blue-700 text-white">
-                <tr>
-                  <th className="p-4 text-left font-black text-xs uppercase w-32 tracking-widest">Время</th>
-                  {DAYS.map(day => <th key={day} className="p-4 text-center font-black text-xs uppercase tracking-widest border-l border-white/10">{day}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {TIME_SLOTS.map((time, idx) => (
-                  <tr key={time} className={idx % 2 === 0 ? "bg-gray-50/30 dark:bg-slate-800/20" : "bg-white dark:bg-slate-900"}>
-                    <td className="p-4 font-black text-gray-400 dark:text-slate-500 text-[10px] text-center border-r border-b border-gray-100 dark:border-slate-800">
-                      <div className="text-blue-600 dark:text-blue-400 text-xs mb-1 font-black">{idx + 1}</div> {time}
-                    </td>
-                    {DAYS.map(day => {
-                      const cell = scheduleData[selectedClass]?.[day]?.[time];
-                      return (
-                        <td key={day} className="p-3 border-r border-b border-gray-100 dark:border-slate-800 group relative min-h-[140px] transition-colors hover:bg-blue-50/30 dark:hover:bg-blue-900/10">
-                          {cell ? (
-                            <CellDisplay data={cell} onEdit={() => handleEdit(selectedClass, day, time)} />
-                          ) : <div className="text-center text-gray-200 dark:text-slate-700 py-8 italic font-light">Свободно</div>}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="overflow-auto bg-gray-100 dark:bg-slate-950 p-6">
-              <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: "top left", width: `${100 / zoomLevel}%`, transition: "transform 0.2s" }}>
-                {DAYS.map(day => (
+        <div className="overflow-auto bg-gray-100 dark:bg-slate-950 p-6">
+          <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: "top left", width: `${Math.max(100, 100 / zoomLevel)}%`, transition: "transform 0.2s" }}>
+            {DAYS.map(day => (
                   <div key={day} id={`day-${day}`} className="bg-white dark:bg-slate-900 mb-10 rounded-3xl shadow-xl border border-gray-200 dark:border-slate-800 overflow-hidden">
                     <div className="bg-green-600 dark:bg-green-700 p-5 text-white font-black text-xl uppercase tracking-[0.2em] text-center shadow-lg">{day}</div>
                     <table className="w-full border-collapse table-fixed">
@@ -604,15 +658,24 @@ export function Schedule() {
                               <td className="p-4 border border-gray-100 dark:border-slate-800 font-bold text-gray-400 dark:text-slate-500 text-[10px] text-center bg-gray-50/50 dark:bg-slate-950/30">{time}</td>
                               {ALL_CLASSES.map(classKey => {
                                 const cell = scheduleData[classKey]?.[day]?.[time];
+                                const isLentBlock = scheduleMode === "lent" && cell && (cell.subject.includes("/") || cell.subject.toLowerCase().includes("ағылшын"));
+
                                 return (
-                                  <td key={classKey} className="p-4 border border-gray-100 dark:border-slate-800 text-center group cursor-pointer transition-colors hover:bg-white dark:hover:bg-slate-800" onClick={() => handleEdit(classKey, day, time)}>
-                                    {cell ? (
-                                      <div className="flex flex-col gap-1.5 items-center">
-                                        <span className="font-black text-gray-900 dark:text-slate-100 text-[13px] leading-tight tracking-tight">{cell.subject}</span>
-                                        <span className={`text-[10px] font-bold uppercase tracking-tighter ${cell.isSubstitute ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-slate-400'}`}>{cell.teacher}</span>
-                                        <span className={`mt-1 px-2.5 py-1 font-black rounded-lg text-[10px] border shadow-sm ${cell.isRoomChanged ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-700' : 'bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 border-blue-100 dark:border-blue-800'}`}>{cell.room}</span>
-                                      </div>
-                                    ) : <div className="text-gray-200 dark:text-slate-800 text-[20px] font-thin">—</div>}
+                                  <td key={classKey} className={`p-4 border border-gray-100 dark:border-slate-800 text-center group cursor-pointer transition-colors relative
+                                     ${isLentBlock ? "bg-purple-50 dark:bg-purple-900/20" : "hover:bg-white dark:hover:bg-slate-800"}
+                                  `} onClick={() => handleEdit(classKey, day, time)}>
+                                    {isLentBlock && (
+                                       <div className="absolute inset-0 border-2 border-purple-400 dark:border-purple-600 rounded-lg opacity-40 pointer-events-none z-0"></div>
+                                    )}
+                                    <div className="relative z-10 w-full h-full flex flex-col justify-center">
+                                      {cell ? (
+                                        <div className="flex flex-col gap-1.5 items-center">
+                                          <span className="font-black text-gray-900 dark:text-slate-100 text-[13px] leading-tight tracking-tight">{cell.subject}</span>
+                                          <span className={`text-[10px] font-bold uppercase tracking-tighter ${cell.isSubstitute ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-slate-400'}`}>{cell.teacher}</span>
+                                          <span className={`mt-1 px-2.5 py-1 font-black rounded-lg text-[10px] border shadow-sm ${cell.isRoomChanged ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-700' : 'bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 border-blue-100 dark:border-blue-800'}`}>{cell.room}</span>
+                                        </div>
+                                      ) : <div className="text-gray-200 dark:text-slate-800 text-[20px] font-thin text-center w-full py-8">—</div>}
+                                    </div>
                                   </td>
                                 );
                               })}
@@ -624,8 +687,6 @@ export function Schedule() {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
         </div>
       </div>
 

@@ -74,6 +74,29 @@ def startup_event():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS nutrition_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            total_vseobuch INTEGER DEFAULT 250,
+            sick_count INTEGER DEFAULT 0,
+            competition_count INTEGER DEFAULT 0,
+            raw_messages_parsed INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inc_id TEXT UNIQUE NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            location TEXT NOT NULL,
+            description TEXT NOT NULL,
+            reporter TEXT NOT NULL,
+            assigned_to TEXT NOT NULL,
+            status TEXT DEFAULT 'open'
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -154,6 +177,19 @@ async def get_messages():
         print(f"Error fetching messages: {e}")
         return []
 
+@app.delete("/api/messages")
+async def clear_messages():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM chat_messages")
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": "All messages cleared"}
+    except Exception as e:
+        print(f"Error clearing messages: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.post("/internal-webhook")
 async def internal_webhook(request: Request):
     data = await request.json()
@@ -166,7 +202,11 @@ async def internal_webhook(request: Request):
     
     source_name = group_name if (is_group and group_name) else user_name
     
-    # Optional Group Filtering (REMOVED as per user request)
+    # Strict filtering for allowed sources only
+    allowed_sources = ["Султан", "infvoi"]
+    if source_name not in allowed_sources:
+        print(f"Message from {source_name} filtered. Allowed: {allowed_sources}.")
+        return {"status": "filtered"}
     
     if wa_paused:
         print("Webhook received but WA is paused. Ignoring.")
@@ -175,33 +215,46 @@ async def internal_webhook(request: Request):
     # Get recent history to provide context for AI (especially for clarifications)
     conn_hist = sqlite3.connect(DB_PATH)
     cur_hist = conn_hist.cursor()
-    cur_hist.execute("SELECT message FROM chat_messages WHERE sender = ? ORDER BY timestamp DESC LIMIT 2", (source_name,))
+    cur_hist.execute("SELECT message FROM chat_messages WHERE sender = ? ORDER BY timestamp DESC LIMIT 5", (source_name,))
     recent_history = cur_hist.fetchall()
     conn_hist.close()
     history_text = "\n".join([row[0] for row in reversed(recent_history)]) if recent_history else "Нет предыдущих сообщений."
         
     # Analyze message with Groq AI for Summary & Importance
     prompt = f"""
-    Проанализируй следующее сообщение из школьного чата (в WhatsApp или Telegram).
+    Ты - умный ИИ-Директор школы. Проанализируй следующее сообщение из школьного чата.
     Источник/Группа/Человек: '{source_name}'
-    Предыдущие сообщения этого пользователя (контекст): '{history_text}'
+    Контекст (последние 5 сообщений от него): '{history_text}'
     Текущее сообщение: '{text_body}'
     
     Задачи: 
-    1. Установи возможную роль отправителя (если понятна, иначе 'Учитель', 'Завуч', 'Завхоз' или 'Сотрудник').
-    2. Является ли сообщение ВАЖНОЙ школьной информацией? (is_important: true/false). Важным считается: кто-то заболел, отсутствует, сломалось, инциденты, поручения. Пустая болтовня — false.
-    3. Выдели САМУЮ СУТЬ в одно предложение (сухой пересказ). Если не важное — оставь summary пустым.
-    4. Если это сообщение о проблеме, для решения которой НЕ ХВАТАЕТ данных (например, сломался стул, но не указан кабинет) -> needs_clarification: true, и напиши clarification_text от лица бота с вопросом, что уточнить (например "Уточните кабинет, пожалуйста").
-    5. Если данных ДОСТАТОЧНО для решения проблемы (н-р "в 302 кабинете потоп"), предложи ДЕЙСТВИЕ (proposed_action), например "Отправить техперсонал в 302 кабинет". В противном случае оставь пустым.
+    1. Установи роль отправителя ('Учитель', 'Завуч', 'Завхоз' или 'Сотрудник').
+    2. Оцени важность (is_important: true/false). Важное: инциденты, ЧП, запросы документов (приказов, отчетов), жалобы, отсутствие на работе.
+    3. Выдели СУТЬ в одно предложение (summary) если это важно.
+    4. ДИНАМИЧНОЕ УПРАВЛЕНИЕ (самое главное): 
+       - РАБОТА С ИНЦИДЕНТАМИ: Если это сообщение о новой проблеме и НЕ ХВАТАЕТ данных -> задай вопрос отправителю (needs_clarification: true). НО если отправитель прямо или косвенно дает понять, что ОН НЕ ЗНАЕТ деталей (н-р: "не знаю где они"), ХВАТИТ у него спрашивать! Установи needs_clarification: false, и сгенерируй proposed_action для ПЕРСОНАЛА (например: "Отправить охранника на поиски").
+       - ЗАПРОСЫ ДОКУМЕНТОВ/ДАННЫХ: Если пользователь просит отправить ему файл, приказ (н-р №76, №130) или отчет, НЕ задавай уточняющих вопросов о старых інцидентах. Просто установи needs_clarification: false и предложи действие (proposed_action: "Предоставить доступ к документу / Отправить файл").
+    5. РАЗДЕЛЕНИЕ КОНТЕКСТА (очень важно): Сравни с контекстом. Является ли текущее сообщение ПРЯМЫМ продолжением предыдущей проблемы? Если тема РЕЗКО поменялась (например, сначала говорили про посторонних, а теперь просят приказ или жалуются на столовую) — это НОВАЯ тема. Обязательно ставь is_continuation: false. НЕ пытайся искать связь там, где ее нет!
     
     Верни чистый JSON без маркдауна:
     {{ 
       "role": "string", 
       "is_important": boolean, 
-      "summary": "только суть или пустая строка",
+      "summary": "только суть или пустая",
       "needs_clarification": boolean,
-      "clarification_text": "вопрос или пустая строка",
-      "proposed_action": "действие или пустая строка"
+      "clarification_text": "вопрос или пустая",
+      "proposed_action": "действие или пустая",
+      "is_continuation": boolean,
+      "nutrition": {{
+         "is_nutrition": boolean,
+         "sick_count": 0,
+         "competition_count": 0
+      }},
+      "incident": {{
+         "is_incident": boolean,
+         "location": "комната или кабинет",
+         "assigned_to": "кому поручить"
+      }}
     }}
     """
     
@@ -230,6 +283,10 @@ async def internal_webhook(request: Request):
         needs_clarification = analysis.get("needs_clarification", False)
         clarification_text = analysis.get("clarification_text", "").strip()
         proposed_action = analysis.get("proposed_action", "").strip()
+        is_continuation = analysis.get("is_continuation", False)
+
+        nutrition = analysis.get("nutrition", {})
+        incident = analysis.get("incident", {})
         
         # Если ИИ посчитал сообщение важным и сгенерировал summary — используем его вместо сырого текста
         if is_important and summary:
@@ -253,6 +310,27 @@ async def internal_webhook(request: Request):
                 VALUES (?, ?, ?, 'pending')
             ''', (source_name, text_body, proposed_action))
             task_id = cur_tasks.lastrowid
+            
+            if incident and incident.get("is_incident"):
+                import uuid
+                inc_id = f"inc-{str(uuid.uuid4())[:8]}"
+                cur_tasks.execute('''
+                    INSERT INTO incidents (inc_id, location, description, reporter, assigned_to, status)
+                    VALUES (?, ?, ?, ?, ?, 'open')
+                ''', (inc_id, incident.get("location", "Неустановлено"), summary or text_body, source_name, incident.get("assigned_to", "Завхоз")))
+            
+            if nutrition and nutrition.get("is_nutrition"):
+                import datetime
+                today_str = datetime.date.today().isoformat()
+                cur_tasks.execute("SELECT id FROM nutrition_reports WHERE date = ?", (today_str,))
+                row = cur_tasks.fetchone()
+                s_count = nutrition.get("sick_count", 0)
+                c_count = nutrition.get("competition_count", 0)
+                if row:
+                    cur_tasks.execute("UPDATE nutrition_reports SET sick_count = sick_count + ?, competition_count = competition_count + ?, raw_messages_parsed = raw_messages_parsed + 1 WHERE id = ?", (s_count, c_count, row[0]))
+                else:
+                    cur_tasks.execute("INSERT INTO nutrition_reports (date, sick_count, competition_count, raw_messages_parsed) VALUES (?, ?, ?, 1)", (today_str, s_count, c_count))
+            
             conn_tasks.commit()
             
             # Broadcast the new task to frontend
@@ -274,14 +352,15 @@ async def internal_webhook(request: Request):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     
-    # Пытаемся найти недавнее важное сообщение от этого же отправителя, чтобы обновить его (merge) а не дублировать
+    # Пытаемся найти недавнее важное сообщение от этого же отправителя
     cur.execute("SELECT id, message FROM chat_messages WHERE sender = ? AND is_important = 1 ORDER BY timestamp DESC LIMIT 1", (source_name,))
     last_msg = cur.fetchone()
     
-    if is_important and last_msg and ("Бот запросил" in last_msg[1] or needs_clarification):
+    # Мержим сообщения ТОЛЬКО если ИИ подтвердил, что это продолжение темы (is_continuation)
+    if is_important and last_msg and is_continuation:
         # Обновляем старое сообщение (сливаем вместе)
         last_id = last_msg[0]
-        base_text = last_msg[1].split("\n[Бот")[0]
+        base_text = last_msg[1].split("\n-> Дополнение:")[0].split("\n[Бот")[0]
         merged_text = f"{base_text}\n-> Дополнение: {final_text}"
         cur.execute("UPDATE chat_messages SET message = ? WHERE id = ?", (merged_text, last_id))
         new_id = last_id
@@ -347,6 +426,47 @@ async def resolve_ai_task(task_id: int, request: Request):
         return {"status": "approved", "message": "Задача выполнена и отправлена Султану"}
     else:
         return {"status": "rejected", "message": "Задача отклонена"}
+
+@app.get("/api/v1/nutrition/today")
+async def get_nutrition_today():
+    import datetime
+    today_str = datetime.date.today().isoformat()
+    report = query_db("SELECT * FROM nutrition_reports WHERE date = ?", (today_str,), one=True)
+    if report:
+        return {
+            "date": report["date"],
+            "totalVseobuch": report["total_vseobuch"],
+            "absentDetails": {
+                "sick_count": report["sick_count"],
+                "competition_count": report["competition_count"]
+            },
+            "rawMessagesParsed": report["raw_messages_parsed"],
+            "status": "success"
+        }
+    return {
+        "date": today_str,
+        "totalVseobuch": 250,
+        "absentDetails": {"sick_count": 0, "competition_count": 0},
+        "rawMessagesParsed": 0,
+        "status": "success"
+    }
+
+@app.get("/api/v1/incidents/active")
+async def get_active_incidents():
+    incidents = query_db("SELECT * FROM incidents WHERE status = 'open' ORDER BY timestamp DESC")
+    res = []
+    if incidents:
+        for inc in incidents:
+            res.append({
+                "id": inc["inc_id"],
+                "timestamp": inc["timestamp"],
+                "location": inc["location"],
+                "description": inc["description"],
+                "reporter": inc["reporter"],
+                "assignedTo": inc["assigned_to"],
+                "status": inc["status"]
+            })
+    return {"incidents": res}
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):

@@ -20,7 +20,8 @@ import {
   Moon,
   BookOpen,
   Wifi,
-  WifiOff
+  WifiOff,
+  Wand2
 } from "lucide-react";
 import { WhatsAppConnector } from "./WhatsAppConnector";
 import { toast } from "sonner";
@@ -168,10 +169,9 @@ export function Layout() {
 
   const menuItems = [
     { path: "/", label: "Расписание", icon: Calendar },
+    { path: "/schedule-generator", label: "AI Генератор", icon: Wand2 },
     { path: "/chat-summary", label: "Сводка чата", icon: MessageSquare },
     { path: "/reports", label: "Отчеты", icon: FileText },
-    { path: "/suggestions", label: "База приказов (RAG)", icon: BookOpen },
-    { path: "/staff", label: "База персонала", icon: Users },
     { path: "/calendar", label: "Календарь директора", icon: CalendarDays },
     { path: "/ai-chat", label: "AI Задачи & Чат", icon: Brain },
   ];

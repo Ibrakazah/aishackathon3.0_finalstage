@@ -7,8 +7,13 @@ import { SuggestionsProblems } from "./components/SuggestionsProblems";
 import { DirectorCalendar } from "./components/DirectorCalendar";
 import { StaffDatabase } from "./components/StaffDatabase";
 import { AiChat } from "./components/AiChat";
+import { OrderDatabase } from "./components/OrderDatabase";
+import { TeacherDatabase } from "./components/TeacherDatabase";
+import { StaffSchedule } from "./components/StaffSchedule";
+import { ScheduleGenerator } from "./components/ScheduleGenerator";
 
 export const router = createBrowserRouter([
+  { path: "/staff/:name", Component: StaffSchedule }, // Secret standalone layout
   {
     path: "/",
     Component: Layout,
@@ -19,8 +24,8 @@ export const router = createBrowserRouter([
       { path: "reports", Component: Reports },
       { path: "suggestions", Component: SuggestionsProblems },
       { path: "calendar", Component: DirectorCalendar },
-      { path: "staff", Component: StaffDatabase },
       { path: "ai-chat", Component: AiChat },
+      { path: "schedule-generator", Component: ScheduleGenerator },
     ],
   },
 ]);

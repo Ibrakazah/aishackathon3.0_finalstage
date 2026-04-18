@@ -93,21 +93,28 @@ client.on('message', async (message) => {
     if (message.from === 'status@broadcast' || message.isStatus) return;
 
     try {
-        const contact = await message.getContact();
-        const chat = await message.getChat();
+        const contact = await message.getContact().catch(() => ({}));
+        const chat = await message.getChat().catch(() => ({}));
         
-        console.log(`Received message from ${chat.isGroup ? chat.name : message.from}: ${message.body}`);
+        const senderName = chat.isGroup ? chat.name : (contact.pushname || contact.name || contact.number || message.from.split('@')[0]);
+        console.log(`[WA] New Message from "${senderName}" (${message.from}): ${message.body}`);
         
-        await axios.post(PYTHON_BACKEND_URL, {
+        const payload = {
             from: message.from,
             body: message.body,
             platform: 'whatsapp',
-            user_name: contact.pushname || contact.name || contact.number || message.from.split('@')[0],
+            user_name: senderName,
             isGroupMsg: chat.isGroup,
             group_name: chat.isGroup ? chat.name : null
-        });
+        };
+
+        const response = await axios.post(PYTHON_BACKEND_URL, payload);
+        console.log(`[WA] Backend responded: ${response.status}`);
     } catch (error) {
-        console.error('Error sending message to Python backend:', error.message);
+        console.error('[WA] Message processing Error:', error.message);
+        if (error.response) {
+            console.error('[WA] Backend Error Data:', error.response.data);
+        }
     }
 });
 
@@ -204,6 +211,22 @@ app.post('/send-contact', async (req, res) => {
     } catch (error) {
         console.error('Error sending WhatsApp message to contact:', error);
         res.status(500).json({ error: 'Failed to send contact message' });
+    }
+});
+
+// NEW: Get all chats to verify names/IDs
+app.get('/api/chats', async (req, res) => {
+    try {
+        const chats = await client.getChats();
+        const simplified = chats.map(c => ({
+            id: c.id._serialized,
+            name: c.name,
+            isGroup: c.isGroup,
+            unreadCount: c.unreadCount
+        }));
+        res.json(simplified);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
