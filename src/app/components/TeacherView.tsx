@@ -41,8 +41,18 @@ export function TeacherView() {
     Object.entries(scheduleData).forEach(([cls, days]: [string, any]) => {
       Object.entries(days).forEach(([day, slots]: [string, any]) => {
         Object.entries(slots).forEach(([time, cell]: [string, any]) => {
-          if (cell.teacher && cell.teacher.includes(teacher)) {
-            lessons[day][time] = { ...cell, class: cls };
+          if (cell.teacher) {
+            const t1 = cell.teacher.toLowerCase().replace(/\s/g, '');
+            const t2 = teacher.toLowerCase().replace(/\s/g, '');
+            
+            // Если одно имя содержит другое (частичное совпадение) 
+            // или если фамилии совпадают (первое слово)
+            const surname1 = cell.teacher.split(' ')[0].toLowerCase();
+            const surname2 = teacher.split(' ')[0].toLowerCase();
+
+            if (t1.includes(t2) || t2.includes(t1) || (surname1.length > 3 && surname1 === surname2)) {
+              lessons[day][time] = { ...cell, class: cls };
+            }
           }
         });
       });

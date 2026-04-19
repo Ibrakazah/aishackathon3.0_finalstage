@@ -27,14 +27,28 @@ interface AiTask {
 }
 
 export function ChatBot() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 1,
-      role: "ai",
-      text: "Привет! Я Oqý — ваш школьный AI-ассистент. Я могу планировать действия в календаре, маршрутизировать задачи и отвечать на ваши запросы. Вы можете писать мне текстом или диктовать голосом!",
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const saved = localStorage.getItem("oqy_chat_history");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Failed to parse saved chat history", e);
+      }
     }
-  ]);
+    return [
+      {
+        id: 1,
+        role: "ai",
+        text: "Привет! Я Oqý — ваш школьный AI-ассистент. Я могу планировать действия в календаре, маршрутизировать задачи и отвечать на ваши запросы. Вы можете писать мне текстом или диктовать голосом!",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("oqy_chat_history", JSON.stringify(messages));
+  }, [messages]);
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);

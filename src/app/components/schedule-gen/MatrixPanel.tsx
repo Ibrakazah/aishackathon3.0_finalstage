@@ -1,6 +1,6 @@
 // ── Задача 2 ── Матрица нагрузки (учителя / предметы / часы)
 import React, { useState } from "react";
-import { Plus, Trash2, BookOpen, Users, DoorOpen, Save, CheckCircle2, Edit2 } from "lucide-react";
+import { Plus, Trash2, BookOpen, Users, DoorOpen, Save, CheckCircle2, Edit2, Zap } from "lucide-react";
 
 // ═══ Default data (seeded from real schedule) ═══
 const DEFAULT_CLASSES = ["7A","7B","7C","8A","8B","8C","8Д","9A","9B","10A","10B","11A","11B"];
@@ -9,33 +9,48 @@ const h = (val: number) => ({ "7": val, "8": val, "9": val, "10": val, "11": val
 
 import { TEACHER_ASSIGNMENTS } from "../../data/teacherAssignments";
 
-const rawDefaultSubjects: Array<{ subject: string; hoursPerWeek: Record<string, number> }> = [
-  { subject: "Алгебра",             hoursPerWeek: h(3) },
-  { subject: "Геометрия",           hoursPerWeek: h(2) },
-  { subject: "Қазақ тілі",         hoursPerWeek: h(3) },
-  { subject: "Қазақ әдебиеті",     hoursPerWeek: h(2) },
-  { subject: "Орыс тілі",          hoursPerWeek: h(2) },
-  { subject: "Ағылшын тілі",       hoursPerWeek: h(3) },
-  { subject: "Физика",             hoursPerWeek: h(3) },
-  { subject: "Химия",              hoursPerWeek: h(2) },
-  { subject: "Биология",           hoursPerWeek: h(2) },
-  { subject: "География",          hoursPerWeek: h(2) },
-  { subject: "Информатика",        hoursPerWeek: h(1) },
-  { subject: "Дене шынықтыру",     hoursPerWeek: h(3) },
-  { subject: "Қазақстан тарихы",   hoursPerWeek: h(2) },
-  { subject: "Дүние жүзі тарихы",  hoursPerWeek: h(1) },
-  { subject: "Тәрбие сағаты",      hoursPerWeek: h(1) },
-];
-
 const uniqueSubjects = new Map<string, { subject: string; hoursPerWeek: Record<string, number> }>();
-rawDefaultSubjects.forEach(s => uniqueSubjects.set(s.subject.toLowerCase(), s));
+
+// Force inject the top 5 core subjects so they are NOT empty even if the teacher dataset has missing info
+const TOP_5: Record<string, { name: string, hours: number }> = {
+  "алгебра": { name: "Алгебра", hours: 3 },
+  "геометрия": { name: "Геометрия", hours: 2 },
+  "қазақ тілі": { name: "Қазақ тілі", hours: 3 },
+  "қазақ әдебиеті": { name: "Қазақ әдебиеті", hours: 2 },
+  "орыс тілі": { name: "Орыс тілі", hours: 2 }
+};
+
+Object.entries(TOP_5).forEach(([key, info]) => {
+  const defaultHours = {} as Record<string, number>;
+  DEFAULT_CLASSES.forEach(c => defaultHours[c] = info.hours);
+  uniqueSubjects.set(key, { subject: info.name, hoursPerWeek: defaultHours });
+});
 
 TEACHER_ASSIGNMENTS.forEach(t => {
    Object.keys(t.subjects).forEach(subj => {
       const key = subj.toLowerCase();
       if (!uniqueSubjects.has(key)) {
-         uniqueSubjects.set(key, { subject: subj, hoursPerWeek: h(0) });
+         uniqueSubjects.set(key, { subject: subj, hoursPerWeek: {} });
       }
+      
+      const subjData = uniqueSubjects.get(key)!;
+      const classMap = t.subjects[subj] as Record<string, number>;
+      
+      Object.entries(classMap).forEach(([className, hours]) => {
+         const stdClass = className
+            .replace("10А", "10A").replace("10В", "10B")
+            .replace("11А", "11A").replace("11В", "11B")
+            .replace("8D", "8Д");
+            
+         // If it's one of the top 5 core subjects, we already seeded it with a strict baseline
+         // but we can trust the teacher's exact hours if they exist, or just leave the baseline.
+         // Overwriting it with the teacher's hours to match exact teacher config if present.
+         if (TOP_5[key]) {
+             subjData.hoursPerWeek[stdClass] = hours;
+         } else {
+             subjData.hoursPerWeek[stdClass] = (subjData.hoursPerWeek[stdClass] || 0) + hours;
+         }
+      });
    });
 });
 
@@ -74,7 +89,7 @@ const DEFAULT_ROOMS = [
 ];
 
 // ── shared store via localStorage ──
-const MATRIX_VERSION = 4; // bump this to force reset of stale data
+const MATRIX_VERSION = 6; // bump this to force reset of stale data
 
 export function loadMatrixStore() {
   try {
@@ -111,12 +126,16 @@ export function loadMatrixStore() {
           }
        }
        
-       if (parsed.subjects.length > 0 && typeof parsed.subjects[0].hoursPerWeek === "number") {
-          parsed.subjects = parsed.subjects.map((s: any) => ({
-             ...s,
-             hoursPerWeek: { "7": s.hoursPerWeek, "8": s.hoursPerWeek, "9": s.hoursPerWeek, "10": s.hoursPerWeek, "11": s.hoursPerWeek }
-          }));
-       }
+       if (parsed.subjects.length > 0 && parsed.subjects[0].hoursPerWeek && parsed.subjects[0].hoursPerWeek["7"] !== undefined) {
+           parsed.subjects = parsed.subjects.map((s: any) => {
+              const newHrs: Record<string, number> = {};
+              parsed.classes.forEach((cls: string) => {
+                 const grade = cls.match(/\d+/)?.[0] || "7";
+                 newHrs[cls] = s.hoursPerWeek[grade] || 0;
+              });
+              return { ...s, hoursPerWeek: newHrs };
+           });
+        }
        
        // Migrate teachers
        if (parsed.teachers) {
@@ -170,10 +189,13 @@ export async function fetchMatrixStoreAsync() {
     if (res.ok) {
       const data = await res.json();
       if (data && data.classes) {
-        // Upgrade version and cache to localStorage
-        const upgraded = { ...data, _version: MATRIX_VERSION };
-        saveMatrixStore(upgraded);
-        return upgraded;
+        if (data._version && data._version >= MATRIX_VERSION) {
+          // Trust the DB if it is same or newer version
+          saveMatrixStore(data);
+          return data;
+        } else {
+          console.warn("DB matrix is outdated. Falling back to fresh default calculations.");
+        }
       }
     }
   } catch (e) {
@@ -202,6 +224,15 @@ export function MatrixPanel() {
   const [saved, setSaved] = useState(false);
   const [section, setSection] = useState<"subjects"|"teachers"|"rooms">("subjects");
   const [editingTeacherIdx, setEditingTeacherIdx] = useState<number | null>(null);
+  
+  const [modalState, setModalState] = useState<{
+    isOpen: boolean;
+    type: "global" | "subject" | "newClass";
+    title: string;
+    grade?: string;
+    subjIdx?: number;
+    value: string;
+  } | null>(null);
 
   React.useEffect(() => {
     fetchMatrixStoreAsync().then((data) => {
@@ -209,6 +240,36 @@ export function MatrixPanel() {
       setIsInitializing(false);
     });
   }, []);
+
+  const handleModalSubmit = () => {
+    if (!modalState) return;
+    const { type, grade, subjIdx, value } = modalState;
+    if (type === "newClass" && value.trim()) {
+      setStore(prev => ({ ...prev, classes: [...prev.classes, value.trim()].sort() }));
+    } else if (type === "global" && grade) {
+      const cleanVal = value.trim().replace(/\s/g, '');
+      const isRel = cleanVal.startsWith("+") || cleanVal.startsWith("-");
+      const dlt = Number(cleanVal);
+      if (!isNaN(dlt)) {
+        setStore(prev => {
+          const newSubjects = prev.subjects.map((s: any) => {
+            const newHrs = { ...(s.hoursPerWeek || {}) };
+            prev.classes.forEach((c: string) => {
+              if (c.startsWith(grade)) {
+                const currentHrs = Number(newHrs[c]) || 0;
+                newHrs[c] = isRel ? Math.max(0, currentHrs + dlt) : Math.max(0, dlt);
+              }
+            });
+            return { ...s, hoursPerWeek: newHrs };
+          });
+          return { ...prev, subjects: newSubjects };
+        });
+      }
+    } else if (type === "subject" && grade && subjIdx !== undefined) {
+      setGradeBulk(subjIdx, grade, value);
+    }
+    setModalState(null);
+  };
 
   // ── subject helpers ──
   const addSubject = () => {
@@ -222,6 +283,34 @@ export function MatrixPanel() {
   const updateSubject = (i: number, field: string, val: any) => {
     const subjects = store.subjects.map((s: any, idx: number) => idx === i ? { ...s, [field]: val } : s);
     setStore({ ...store, subjects });
+  };
+
+  const setGradeBulk = (subjIdx: number, grade: string, inputVal: string) => {
+    const cleanVal = inputVal.trim().replace(/\s/g, '');
+    const isRelative = cleanVal.startsWith("+") || cleanVal.startsWith("-");
+    const delta = Number(cleanVal);
+    if (isNaN(delta)) return;
+
+    setStore(prev => {
+      const subjects = [...prev.subjects];
+      const s = { ...subjects[subjIdx] };
+      const newHrs = { ...(s.hoursPerWeek || {}) };
+
+      prev.classes.forEach((cls: string) => {
+        if (cls.startsWith(grade)) {
+          const currentHrs = Number(newHrs[cls]) || 0;
+          if (isRelative) {
+            newHrs[cls] = Math.max(0, currentHrs + delta);
+          } else {
+            newHrs[cls] = Math.max(0, delta);
+          }
+        }
+      });
+      
+      s.hoursPerWeek = newHrs;
+      subjects[subjIdx] = s;
+      return { ...prev, subjects };
+    });
   };
 
   // ── teacher helpers ──
@@ -292,60 +381,129 @@ export function MatrixPanel() {
       <div className="p-6">
         {/* ── SUBJECTS ── */}
         {section === "subjects" && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between mb-2">
+          <div className="space-y-6">
+            <div className="flex flex-col bg-blue-600 dark:bg-indigo-600 rounded-[2.5rem] p-6 text-white mb-8 shadow-xl shadow-blue-500/20 relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:scale-110 transition-all duration-700">
+                <Users className="w-32 h-32" />
+              </div>
+              <div className="relative z-10">
+                <h3 className="text-base font-black uppercase tracking-widest mb-2 flex items-center gap-2">
+                  <Zap className="w-5 h-5 text-yellow-400" /> Глобальное управление
+                </h3>
+                <p className="text-xs text-blue-100 font-medium mb-5 max-w-sm">
+                  Установите или добавьте часы для целой параллели сразу во ВСЕХ предметах. Например: "+1" ко всем урокам 7-х классов.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {["7", "8", "9", "10", "11"].map(grade => (
+                    <button
+                      key={grade}
+                      onClick={() => {
+                        setModalState({
+                          isOpen: true,
+                          type: "global",
+                          grade,
+                          title: `ОБЩЕЕ действие для всех ${grade}-х классов во ВСЕХ предметах (например, +1 или 2):`,
+                          value: "1"
+                        });
+                      }}
+                      className="px-4 py-2 bg-white/20 hover:bg-white text-white hover:text-blue-600 rounded-xl text-xs font-black transition-all backdrop-blur-md border border-white/20"
+                    >
+                      Для всей {grade} пар.
+                    </button>
+                  ))}
+                  <div className="w-[1px] h-8 bg-white/20 mx-2 self-center" />
+                  <button
+                    onClick={() => {
+                      setModalState({
+                        isOpen: true,
+                        type: "newClass",
+                        title: "Введите название нового класса (например, 7Г):",
+                        value: ""
+                      });
+                    }}
+                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl text-xs font-black transition-all shadow-lg"
+                  >
+                    + Добавить класс
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between mb-4">
               <h3 className="font-black text-gray-900 dark:text-white text-sm uppercase tracking-widest">
-                Предметы и часы в неделю (по параллелям)
+                Нагрузка по предметам
               </h3>
               <button onClick={addSubject} className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-xl text-xs font-bold border border-blue-200 dark:border-blue-800 hover:bg-blue-100 transition-all">
-                <Plus className="w-3.5 h-3.5" /> Добавить
+                <Plus className="w-3.5 h-3.5" /> Добавить предмет
               </button>
             </div>
-            <p className="text-xs text-gray-400 dark:text-slate-500 mb-4">
-              Укажите количество уроков в неделю для каждого предмета по параллелям (7-11 классы). Алгоритм учтет их при генерации.
+            
+            <p className="text-xs text-gray-400 dark:text-slate-500 mb-6">
+              Укажите количество часов для каждого класса. Используйте кнопки "Массово" для быстрой установки часов внутри предмета.
             </p>
-            <div className="flex flex-col gap-3">
-              <div className="hidden md:flex items-center px-4 py-2 bg-gray-100 dark:bg-slate-800 rounded-xl font-bold text-[10px] text-gray-500 uppercase tracking-widest">
-                 <div className="flex-1">Предмет</div>
-                 <div className="flex gap-1 w-[260px] justify-between pr-8">
-                    <span className="w-9 text-center text-blue-600 dark:text-blue-400">7 кл</span>
-                    <span className="w-9 text-center text-blue-600 dark:text-blue-400">8 кл</span>
-                    <span className="w-9 text-center text-blue-600 dark:text-blue-400">9 кл</span>
-                    <span className="w-9 text-center text-blue-600 dark:text-blue-400">10 кл</span>
-                    <span className="w-9 text-center text-blue-600 dark:text-blue-400">11 кл</span>
-                 </div>
-              </div>
-
+            
+            <div className="flex flex-col gap-6">
               {store.subjects.map((s: any, i: number) => (
-                <div key={i} className="flex flex-col md:flex-row items-center gap-3 bg-gray-50 dark:bg-slate-800 p-3 rounded-2xl border border-gray-100 dark:border-slate-700 group">
-                  <div className="flex items-center gap-3 flex-1 w-full">
-                    <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/30 rounded-xl flex items-center justify-center flex-shrink-0">
-                      <BookOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <div key={i} className="bg-gray-50 dark:bg-slate-800 p-6 rounded-[2.5rem] border border-gray-100 dark:border-slate-700 shadow-sm relative overflow-hidden group">
+                  {/* Subject Header */}
+                  <div className="flex flex-col lg:flex-row items-start lg:items-center gap-4 mb-6 relative z-10">
+                    <div className="flex items-center gap-4 flex-1">
+                       <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-inner">
+                         <BookOpen className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                       </div>
+                       <div className="flex flex-col">
+                         <input
+                          value={s.subject}
+                          onChange={e => updateSubject(i, "subject", e.target.value)}
+                          className="text-lg font-black text-gray-900 dark:text-white bg-transparent outline-none focus:text-blue-600 transition-colors w-full"
+                         />
+                         <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">название предмета</span>
+                       </div>
                     </div>
-                    <input
-                      value={s.subject}
-                      onChange={e => updateSubject(i, "subject", e.target.value)}
-                      className="flex-1 bg-transparent text-sm font-bold text-gray-900 dark:text-white outline-none min-w-0"
-                    />
+                    
+                    <div className="flex items-center gap-1.5 p-1 bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700">
+                      <span className="px-3 text-[10px] font-black text-gray-400 uppercase tracking-widest mr-2 hidden sm:inline">Массово:</span>
+                      {["7", "8", "9", "10", "11"].map(grade => (
+                        <button
+                          key={grade}
+                          onClick={() => {
+                            setModalState({
+                              isOpen: true,
+                              type: "subject",
+                              subjIdx: i,
+                              grade,
+                              title: `Установить часы для всех ${grade}-х классов по предмету "${s.subject}" (например, 2 или +1):`,
+                              value: "2"
+                            });
+                          }}
+                          className="px-3 py-1.5 hover:bg-blue-600 hover:text-white bg-gray-50 dark:bg-slate-800 text-gray-600 dark:text-slate-400 rounded-xl text-[10px] font-black transition-all border border-transparent hover:shadow-md"
+                        >
+                          {grade} кл
+                        </button>
+                      ))}
+                      <div className="w-[1px] h-6 bg-gray-100 dark:bg-slate-700 mx-2" />
+                      <button onClick={() => removeSubject(i)} className="p-2 text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all">
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-start">
-                    {["7", "8", "9", "10", "11"].map(grade => (
-                      <div key={grade} className="flex flex-col items-center">
-                        <span className="text-[9px] font-bold text-gray-400 md:hidden mb-1">{grade} кл</span>
-                        <input 
-                           type="number" min={0} max={15}
-                           value={s.hoursPerWeek?.[grade] ?? 0}
-                           onChange={e => {
-                              const hrs = { ...s.hoursPerWeek, [grade]: Number(e.target.value) };
-                              updateSubject(i, "hoursPerWeek", hrs);
-                           }}
-                           className="w-8 md:w-10 text-center font-black text-blue-600 dark:text-blue-400 text-sm bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded outline-none py-1 focus:border-blue-500"
+
+                  {/* Class Grid */}
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-12 gap-3 relative z-10">
+                    {store.classes.map((cls: string) => (
+                      <div key={cls} className="flex flex-col items-center gap-1.5 p-2 bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-700 shadow-sm transition-all hover:shadow-md group/item">
+                        <span className="text-[10px] font-black text-gray-400 group-hover/item:text-blue-500 transition-colors uppercase">{cls}</span>
+                        <input
+                          type="number" min={0} max={15}
+                          value={s.hoursPerWeek?.[cls] ?? 0}
+                          onChange={e => {
+                            const newHrs = { ...s.hoursPerWeek, [cls]: Number(e.target.value) };
+                            updateSubject(i, "hoursPerWeek", newHrs);
+                          }}
+                          className="w-full text-center text-sm font-black text-gray-900 dark:text-white bg-gray-50 dark:bg-slate-800 rounded-xl py-2 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
                         />
                       </div>
                     ))}
-                    <button onClick={() => removeSubject(i)} className="ml-2 text-red-400 hover:text-red-600 transition-all opacity-100 md:opacity-0 group-hover:opacity-100">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
                   </div>
                 </div>
               ))}
@@ -468,6 +626,46 @@ export function MatrixPanel() {
           </div>
         )}
       </div>
+
+      {/* ── CUSTOM MODAL OVERLAY ── */}
+      {modalState && modalState.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2rem] shadow-2xl border border-gray-100 dark:border-slate-800 overflow-hidden transform animate-in slide-in-from-bottom-4 zoom-in-95">
+            <div className="p-6">
+              <h4 className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 mb-4 flex items-center gap-2">
+                <Edit2 className="w-4 h-4" /> Ввод значения
+              </h4>
+              <label className="block text-sm font-bold text-gray-800 dark:text-slate-200 mb-4 leading-relaxed">
+                {modalState.title}
+              </label>
+              <input
+                autoFocus
+                type="text"
+                value={modalState.value}
+                onChange={e => setModalState({ ...modalState, value: e.target.value })}
+                onKeyDown={e => { if (e.key === 'Enter') handleModalSubmit(); }}
+                className="w-full bg-gray-50 dark:bg-slate-800 border-2 border-gray-200 dark:border-slate-700 focus:border-blue-500 rounded-xl px-4 py-3 text-lg font-black text-gray-900 dark:text-white outline-none transition-all"
+              />
+            </div>
+            <div className="flex bg-gray-50 dark:bg-slate-950/50 border-t border-gray-100 dark:border-slate-800">
+              <button
+                onClick={() => setModalState(null)}
+                className="flex-1 px-6 py-4 text-xs font-black uppercase tracking-widest text-gray-500 hover:text-gray-700 dark:text-slate-400 dark:hover:text-slate-200 transition-colors"
+              >
+                Отмена
+              </button>
+              <div className="w-[1px] bg-gray-200 dark:bg-slate-800" />
+              <button
+                onClick={handleModalSubmit}
+                className="flex-1 px-6 py-4 text-xs font-black uppercase tracking-widest text-blue-600 hover:text-blue-700 dark:text-blue-400 transition-colors"
+              >
+                ОК
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

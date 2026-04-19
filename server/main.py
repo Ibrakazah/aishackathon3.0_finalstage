@@ -90,7 +90,7 @@ def query_db(query, args=(), one=False):
     return (rv[0] if rv else None) if one else rv
 
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute('''
@@ -142,8 +142,23 @@ def startup_event():
 
 # ═══ WhatsApp Status API ═══
 
+async def sync_wa_status():
+    global wa_status
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{WA_SERVICE_URL}/status", timeout=2)
+            if resp.status_code == 200:
+                new_status = resp.json().get("status", "disconnected")
+                if new_status != wa_status:
+                    wa_status = new_status
+                    await manager.broadcast({"type": "WA_STATUS", "status": wa_status})
+    except:
+        pass
+
 @app.get("/api/wa/status")
 async def get_wa_status():
+    if wa_status != "connected":
+        await sync_wa_status()
     return {"status": wa_status, "paused": wa_paused}
 
 @app.post("/api/wa/pause")
@@ -164,11 +179,34 @@ async def resume_wa():
 async def get_wa_qr():
     """Proxy QR data from the Node.js wa-service"""
     try:
-        resp = requests.get(f"{WA_SERVICE_URL}/qr", timeout=3)
-        return resp.json()
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{WA_SERVICE_URL}/qr", timeout=3)
+            return resp.json()
     except Exception as e:
         print(f"WA QR fetch error: {e}")
         return {"qr": None, "status": wa_status}
+
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Transcribe audio using Groq Whisper API"""
+    try:
+        content = await file.read()
+        files = {
+            "file": ("audio.webm", content, "audio/webm"),
+            "model": (None, "whisper-large-v3"),
+            "language": (None, "ru"),
+        }
+        headers = {"Authorization": f"Bearer {API_KEY}"}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(WHISPER_URL, headers=headers, files=files, timeout=30)
+        
+        if response.status_code != 200:
+            return {"success": False, "error": response.text}
+        
+        result = response.json()
+        return {"success": True, "text": result.get("text", "")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.post("/api/wa/status-update")
 async def wa_status_update(request: Request):
@@ -185,10 +223,11 @@ async def wa_logout():
     """Proxy logout to wa-service Node.js"""
     global wa_status
     try:
-        resp = requests.post(f"{WA_SERVICE_URL}/logout", timeout=10)
-        wa_status = "disconnected"
-        await manager.broadcast({"type": "WA_STATUS", "status": "disconnected"})
-        return resp.json()
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"{WA_SERVICE_URL}/logout", timeout=10)
+            wa_status = "disconnected"
+            await manager.broadcast({"type": "WA_STATUS", "status": "disconnected"})
+            return resp.json()
     except Exception as e:
         print(f"WA logout error: {e}")
         return {"error": str(e)}
@@ -275,14 +314,16 @@ async def internal_webhook(request: Request):
     
     Задачи: 
     1. Установи роль отправителя ('Учитель', 'Завуч', 'Завхоз' или 'Сотрудник').
-    2. Оцени важность (is_important: true/false). Важное: инциденты, ЧП, запросы документов (приказов, отчетов), жалобы, отсутствие на работе.
+    2. Оцени важность (is_important: true/false). Важное: инциденты, ЧП, запросы документов, жалобы, отчеты по посещаемости и питанию (кто отсутствует).
     3. Выдели СУТЬ в одно предложение (summary) если это важно.
     4. ДИНАМИЧНОЕ УПРАВЛЕНИЕ (самое главное): 
        - НИКОГДА НЕ ЗАДАВАЙ УТОЧНЯЮЩИХ ВОПРОСОВ, если сообщение НЕ важное! Если is_important: false, всегда ставь needs_clarification: false. Уточняй только критические ЧП и инциденты.
+       - ОТЧЕТЫ ОБ ОТСУТСТВУЮЩИХ (КРИТИЧЕСКИ ВАЖНО): Если написано "в 10а нет 3 детей", "не пришло 5 человек", "отсутствуют 4" или аналогично — это ПОЛНАЯ информация для отчета. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО уточнять причины отсутствия. ТЫ ОБЯЗАН установить "is_important": true, needs_clarification: false и summary: "Отчет по питанию: [класс] - [кол-во] отсутствуют".
        - РАБОТА С ИНЦИДЕНТАМИ: Если это сообщение о новой проблеме и НЕ ХВАТАЕТ данных -> задай вопрос отправителю (needs_clarification: true). НО если отправитель прямо или косвенно дает понять, что ОН НЕ ЗНАЕТ деталей, ХВАТИТ у него спрашивать! Установи needs_clarification: false, и сгенерируй proposed_action.
        - ЗАПРОСЫ ДОКУМЕНТОВ/ДАННЫХ: Не задавай уточняющих вопросов о старых инцидентах. Просто установи needs_clarification: false и предложи действие.
+       - ГЕНЕРАЦИЯ ОТЧЕТОВ И ПРИКАЗОВ: Если просят "сделай отчет" или "напиши приказ", но НЕ говорят какой -> задай вопрос (needs_clarification: true, clarification_text: "Уточните, какой именно отчет или приказ нужно подготовить?"). Если детали есть (напр. "приказ столовой на 165 порций" или "сделай порции больше") -> оформи как готовое поручение в proposed_action (напр. "Сформировать приказ для столовой о приготовлении 165 порций") и assign на нужный отдел (напр. "Завпроизводством / Столовая").
     5. РАЗДЕЛЕНИЕ КОНТЕКСТА (очень важно): Сравни с контекстом. Является ли текущее сообщение ПРЯМЫМ продолжением предыдущей проблемы? Если тема РЕЗКО поменялась — это НОВАЯ тема. Обязательно ставь is_continuation: false. НЕ пытайся искать связь там, где ее нет!
-    
+    6. КОНКРЕТНОЕ ПОРУЧЕНИЕ (важно): В поле 'proposed_action' пиши не просто пересказ проблемы, а конкретную инструкцию/приказ. Например: вместо "Сломан компьютер" пиши "Айти-специалист должен починить компьютер в 201 кабинете". Всегда указывай КТО и ЧТО должен сделать. Оформляй в директивном стиле.    
     Верни чистый JSON без маркдауна:
     {{ 
       "role": "string", 
@@ -317,9 +358,15 @@ async def internal_webhook(request: Request):
             "messages": [{ "role": "user", "content": prompt }],
             "temperature": 0
         }
-        resp = requests.post(GROQ_URL, headers=headers, json=payload)
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(GROQ_URL, headers=headers, json=payload, timeout=30)
+        
+        if resp.status_code != 200:
+            print(f"Groq API Error: {resp.status_code} - {resp.text}")
+            raise Exception(f"API Error {resp.status_code}: {resp.text}")
+            
         # Debug log for Groq
-        print(f"Groq API Response for '{text_body[:20]}...': {resp.status_code} - {resp.text[:200]}")
+        # print(f"Groq API Response for '{text_body[:20]}...': {resp.status_code} - {resp.text[:200]}")
         
         ai_text = resp.json()['choices'][0]['message']['content']
         json_str = ai_text.replace('```json', '').replace('```', '').strip()
@@ -346,7 +393,8 @@ async def internal_webhook(request: Request):
             # ИИ отвечает только в личные сообщения (не пишет в группы)
             if not is_group:
                 try:
-                    requests.post(f"{WA_SERVICE_URL}/send", json={"to": from_id, "text": clarification_text}, timeout=5)
+                    async with httpx.AsyncClient() as client:
+                        await client.post(f"{WA_SERVICE_URL}/send", json={"to": from_id, "text": clarification_text}, timeout=5)
                     # Дописываем к тексту то, что ИИ задал уточняющий вопрос
                     final_text += f"\n[Бот запросил уточнение в ЛС: '{clarification_text}']"
                 except Exception as auto_reply_err:
@@ -399,15 +447,16 @@ async def internal_webhook(request: Request):
             
             # --- АВТОМАТИЧЕСКОЕ ОПОВЕЩЕНИЕ СООТВЕТСТВУЮЩЕГО ПЕРСОНАЛА ---
             try:
-                if incident and incident.get("is_incident"):
-                    target = incident.get("assigned_to", "Завхоз")
-                    notif_text = f"📢 *Новая заявка: {incident.get('location', 'Школа')}*\n\n{summary or text_body}\n\nПожалуйста, отработайте как можно скорее."
-                    requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": target, "text": notif_text}, timeout=5)
-                
-                elif nutrition and nutrition.get("is_nutrition"):
-                    # Оповещаем Адиля о новых данных по питанию
-                    notif_text = f"🍎 *Обновление по питанию:* {source_name} сообщил о {nutrition.get('sick_count', 0)} болеющих."
-                    requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": "Adil", "text": notif_text}, timeout=5)
+                async with httpx.AsyncClient() as client:
+                    if incident and incident.get("is_incident"):
+                        target = incident.get("assigned_to", "Завхоз")
+                        notif_text = f"📢 *Новая заявка: {incident.get('location', 'Школа')}*\n\n{summary or text_body}\n\nПожалуйста, отработайте как можно скорее."
+                        await client.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": target, "text": notif_text}, timeout=5)
+                    
+                    elif nutrition and nutrition.get("is_nutrition"):
+                        # Оповещаем Адиля о новых данных по питанию
+                        notif_text = f"🍎 *Обновление по питанию:* {source_name} сообщил о {nutrition.get('sick_count', 0)} болеющих."
+                        await client.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": "Adil", "text": notif_text}, timeout=5)
             except Exception as e:
                 print(f"Failed to auto-notify: {e}")
 
@@ -479,13 +528,15 @@ async def resolve_ai_task(task_id: int, request: Request):
     conn.commit()
     conn.close()
     
+    if action == "approve":
         # Отправляем сообщение нужному адресату
         try:
             tasks_data = query_db("SELECT * FROM ai_tasks WHERE id = ?", (task_id,), one=True)
             if tasks_data:
                 target_assignee = tasks_data.get('assignee', 'Султан')
                 msg_text = f"🛠️ *Новая задача/Уведомление от ИИ-Директора:*\n\nКому: {target_assignee}\nИсточник: {tasks_data['source']}\nДетали: {tasks_data['proposed_action']}\n\nОригинал: {tasks_data['original_message']}"
-                requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": target_assignee, "text": msg_text}, timeout=10)
+                async with httpx.AsyncClient() as client:
+                    await client.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": target_assignee, "text": msg_text}, timeout=10)
         except Exception as e:
             print(f"Failed to send task to {target_assignee}: {e}")
             
@@ -583,7 +634,7 @@ async def generate_fast(request: Request):
     rooms = matrix.get("rooms", [])
     
     days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"]
-    time_slots = ["08:00-08:45", "09:05-09:50", "10:10-10:55", "11:00-11:45", "11:50-12:35", "13:05-13:50", "14:20-15:00", "15:05-15:45"]
+    time_slots = ["08:00-08:45", "09:05-09:50", "10:10-10:55", "11:00-11:45", "11:50-12:35", "13:05-13:50", "14:20-15:00", "15:05-15:45", "16:00-16:45", "16:45-17:30"]
     
     for cls in classes:
         schedule[cls] = {d: {} for d in days}
@@ -608,7 +659,11 @@ async def generate_fast(request: Request):
 
     def mark_busy(c, r, tc, d, tm):
         if c: class_busy.setdefault(c, {}).setdefault(d, {})[tm] = True
-        if r: room_busy.setdefault(r, {}).setdefault(d, {})[tm] = True
+        if r: 
+            # Специальная логика для Спортзала: может вместить до 3 классов одновременно
+            capacity = 3 if "спортзал" in r.lower() else 1
+            current = room_busy.setdefault(r, {}).setdefault(d, {}).get(tm, 0)
+            room_busy[r][d][tm] = current + 1
         if tc: 
             teacher_busy.setdefault(tc, {}).setdefault(d, {})[tm] = True
             teacher_day_load.setdefault(tc, {})[d] = teacher_day_load.get(tc, {}).get(d, 0) + 1
@@ -617,7 +672,10 @@ async def generate_fast(request: Request):
     def is_free(c, r, tc, d, tm):
         # Check global busy maps
         if c and class_busy.get(c, {}).get(d, {}).get(tm): return False
-        if r and room_busy.get(r, {}).get(d, {}).get(tm): return False
+        if r:
+            current_rooms = room_busy.get(r, {}).get(d, {}).get(tm, 0)
+            capacity = 3 if "спортзал" in r.lower() else 1
+            if current_rooms >= capacity: return False
         if tc and teacher_busy.get(tc, {}).get(d, {}).get(tm): return False
         
         # Check explicit unavailability (sick days / maintenance)
@@ -762,7 +820,13 @@ async def generate_fast(request: Request):
             m = re.search(r"\d+", cls)
             grade = m.group(0) if m else "7"
             
-            tot_hrs = hpw.get(grade, 0) if isinstance(hpw, dict) else hpw
+            # Check for class-specific override
+            overrides = subj_obj.get("overrides", {})
+            if cls in overrides:
+                tot_hrs = overrides[cls]
+            else:
+                tot_hrs = hpw.get(grade, 0) if isinstance(hpw, dict) else hpw
+
             if strict.get(cls, {}).get(subj.lower(), 0) > 0: continue
             
             lent_hrs = sum(1 for l in lents if cls in l.get("parallelClasses", []) and l.get("subject","").lower() == subj.lower())
@@ -940,7 +1004,8 @@ async def process_command(cmd: dict):
             "response_format": {"type": "json_object"}
         }
         
-        resp = requests.post(GROQ_URL, headers=headers, json=payload)
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(GROQ_URL, headers=headers, json=payload, timeout=30)
         data = resp.json()['choices'][0]['message']['content']
         result = json.loads(data)
         
@@ -1047,9 +1112,17 @@ async def save_full_schedule(schedule: dict):
 @app.get("/api/teachers")
 async def get_teachers():
     try:
-        rows = query_db("SELECT name FROM teachers ORDER BY name")
-        return [r["name"] for r in rows]
-    except:
+        # Берем уникальных учителей прямо из текущего расписания + из статической таблицы
+        from_cells = query_db("SELECT DISTINCT teacher FROM schedule_cells WHERE teacher IS NOT NULL AND teacher != ''")
+        set1 = {r["teacher"] for r in from_cells}
+        
+        from_table = query_db("SELECT name FROM teachers")
+        set2 = {r["name"] for r in from_table}
+        
+        all_teachers = sorted(list(set1 | set2))
+        return all_teachers
+    except Exception as e:
+        print(f"Error fetching teachers: {e}")
         return []
 
 @app.get("/api/rooms")

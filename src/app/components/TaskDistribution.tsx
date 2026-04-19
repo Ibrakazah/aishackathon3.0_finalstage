@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import {
   Mic,
@@ -44,8 +44,15 @@ export function TaskDistribution() {
     assignTo: string;
     text: string;
     status: "pending" | "sent";
-  }[]>([]);
+  }[]>(() => {
+    return JSON.parse(localStorage.getItem("ai_delegate_tasks") || "[]");
+  });
+
   const [pendingConfirmation, setPendingConfirmation] = useState<ParsedCommand | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("ai_delegate_tasks", JSON.stringify(activeTasks));
+  }, [activeTasks]);
 
   const handleSubmit = async () => {
     if (!taskInput.trim() || isProcessing) return;

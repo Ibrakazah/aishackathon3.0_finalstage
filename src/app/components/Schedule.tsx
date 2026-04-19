@@ -101,8 +101,8 @@ export function Schedule() {
   const [editingCell, setEditingCell] = useState<{ classKey: string; day: string; time: string } | null>(null);
   const [editForm, setEditForm] = useState<ScheduleCell>({ subject: "", teacher: "", room: "" });
 
-  const allRooms = collectRooms(originalData);
-  const allTeachers = collectTeachers(originalData);
+  const allRooms = React.useMemo(() => collectRooms(originalData), [originalData]);
+  const allTeachers = React.useMemo(() => collectTeachers(originalData), [originalData]);
 
   const handleEdit = (classKey: string, day: string, time: string) => {
     const cellData = scheduleData[classKey]?.[day]?.[time] || { subject: "", teacher: "", room: "" };
@@ -657,13 +657,18 @@ export function Schedule() {
             {DAYS.map(day => (
                   <div key={day} id={`day-${day}`} className="bg-white dark:bg-slate-900 mb-10 rounded-3xl shadow-xl border border-gray-200 dark:border-slate-800 overflow-hidden">
                     <div className="bg-green-600 dark:bg-green-700 p-5 text-white font-black text-xl uppercase tracking-[0.2em] text-center shadow-lg">{day}</div>
-                    <table className="w-full border-collapse table-fixed">
-                      <thead>
-                        <tr className="bg-gray-800 dark:bg-slate-800 text-white text-[10px] font-black uppercase tracking-widest">
-                          <th className="p-4 w-28 border border-white/5 bg-gray-900 dark:bg-slate-950">Уақыт</th>
-                          {ALL_CLASSES.map(cls => <th key={cls} className="p-4 border border-white/5">{cls}</th>)}
-                        </tr>
-                      </thead>
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-separate border-spacing-0">
+                        <thead>
+                          <tr className="bg-gray-800 dark:bg-slate-800 text-white text-[10px] font-black uppercase tracking-widest sticky top-0 z-20">
+                            <th className="p-4 w-28 min-w-[112px] border border-white/5 bg-gray-900 dark:bg-slate-950 sticky left-0 z-30">Уақыт</th>
+                            {ALL_CLASSES.map(cls => (
+                              <th key={cls} className="p-4 border border-white/5 min-w-[160px] bg-gray-800 dark:bg-slate-800">
+                                {cls}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
                       <tbody>
                         {TIME_SLOTS.map((time, tIdx) => (
                           <React.Fragment key={time}>
@@ -674,7 +679,7 @@ export function Schedule() {
                               </tr>
                             )}
                             <tr className="hover:bg-blue-50/50 dark:hover:bg-indigo-900/10 transition-all group">
-                              <td className="p-4 border border-gray-100 dark:border-slate-800 font-bold text-gray-400 dark:text-slate-500 text-[10px] text-center bg-gray-50/50 dark:bg-slate-950/30">{time}</td>
+                              <td className="p-4 border border-gray-100 dark:border-slate-800 font-bold text-gray-400 dark:text-slate-500 text-[10px] text-center bg-gray-50/50 dark:bg-slate-950/30 sticky left-0 z-10">{time}</td>
                               {ALL_CLASSES.map(classKey => {
                                 const cell = scheduleData[classKey]?.[day]?.[time];
                                 const isLentBlock = scheduleMode === "lent" && cell && (cell.subject.includes("/") || cell.subject.toLowerCase().includes("ағылшын"));
@@ -698,14 +703,15 @@ export function Schedule() {
                                   </td>
                                 );
                               })}
-                            </tr>
-                          </React.Fragment>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
+                          </tr>
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
+            ))}
+          </div>
         </div>
       </div>
 

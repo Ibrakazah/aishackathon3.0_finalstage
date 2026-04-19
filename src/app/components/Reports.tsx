@@ -1,6 +1,7 @@
+// Reports v2.1 — Bullying + Load + Nutrition + Timesheet
 import React, { useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
-import { TrendingUp, Users, Award, BookOpen, FileText, Bot, FileCheck, Save } from "lucide-react";
+import { TrendingUp, Users, Award, BookOpen, FileText, Bot, FileCheck, Save, ShieldAlert, Clock } from "lucide-react";
 
 const NUTRITION_TEMPLATE = `БЛАНК ГОСУДАРСТВЕННОГО УЧРЕЖДЕНИЯ
 (Логотип школы, БИН, Адрес)
@@ -59,12 +60,71 @@ const TIMESHEET_TEMPLATE = `ТАБЕЛЬ ОБЛІКУ РОБОЧОГО ЧАСУ 
 
 Директор {{ school_name }} ___________________ / {{ director_name }} /`;
 
+const TEACHER_LOAD_TEMPLATE = `УТВЕРЖДАЮ
+Директор {{ school_name }}
+___________________ / {{ director_name }} /
+«{{ current_date }}» г.
+
+ПЛАН УЧЕБНОЙ НАГРУЗКИ ПЕДАГОГИЧЕСКОГО СОСТАВА
+на {{ report_period }}
+
+| ФИО Учителя | Предмет | Классы (Часы) | Итого часовой нагрузки |
+|-------------|---------|---------------|-------------------------|
+{{ load_table_rows }}
+
+Система контроля: Данная нагрузка сформирована на основе матрицы расписания AQBOBEK AI и соответствует нормам тарификации.`;
+
+const BULLYING_TEMPLATE = `СЛУЖЕБНАЯ ЗАПИСКА (КОНФИДЕНЦИАЛЬНО)
+Кому: Школьному психологу
+От: Системы мониторинга AQBOBEK AI
+Дата: «{{ current_date }}» г.
+
+ОТЧЕТ ПО СЛУЧАЯМ БУЛЛИНГА
+(За отчетный период: {{ report_period }})
+
+Настоящим сообщаем, что за указанный период в системе зафиксировано {{ bullying_count }} инцидентов, квалифицированных как буллинг/конфликтные ситуации.
+
+ДАННЫЕ ПОСЛЕДНЕГО ИНЦИДЕНТА:
+* Статус: Зафиксировано уведомление
+* Рекомендация ИИ: Провести индивидуальную беседу с участниками конфликта в течение 24 часов.
+* Ответственное лицо: Школьный психолог.
+
+Итоговая статистика по школе:
+Общее количество случаев за год: {{ total_bullying_cases }}
+
+Система контроля: Данные сформированы на основе анонимных обращений и анализа эмоционального климата.`;
+
+import { TEACHER_ASSIGNMENTS } from "../data/teacherAssignments";
+
 export function Reports() {
   const pendingReportTopic = sessionStorage.getItem("pendingReportTopic");
-  const isTimesheetMode = pendingReportTopic === "Табель рабочего времени";
-
+  
   const [activeTab, setActiveTab] = useState<"analytics" | "ai_reports">("ai_reports");
-  const [template, setTemplate] = useState(isTimesheetMode ? TIMESHEET_TEMPLATE : NUTRITION_TEMPLATE);
+  const [reportType, setReportType] = useState<"nutrition" | "timesheet" | "load" | "bullying">(
+    pendingReportTopic === "Табель рабочего времени" ? "timesheet" : "nutrition"
+  );
+  
+  const getInitialTemplate = (type: string) => {
+    if (type === "timesheet") return TIMESHEET_TEMPLATE;
+    if (type === "load") return TEACHER_LOAD_TEMPLATE;
+    if (type === "bullying") return BULLYING_TEMPLATE;
+    return NUTRITION_TEMPLATE;
+  };
+  
+  const [bullyingCount, setBullyingCount] = React.useState(() => {
+    return parseInt(localStorage.getItem("school_bullying_cases") || "12");
+  });
+
+  React.useEffect(() => {
+    const handleBullying = () => {
+       const newCount = parseInt(localStorage.getItem("school_bullying_cases") || "12");
+       setBullyingCount(newCount);
+    };
+    window.addEventListener("bullying-incident", handleBullying);
+    return () => window.removeEventListener("bullying-incident", handleBullying);
+  }, []);
+
+  const [template, setTemplate] = useState(getInitialTemplate(reportType));
   const [aiState, setAiState] = useState<"idle" | "asking" | "generating" | "done">("idle");
   
   // Fields for Nutrition
@@ -104,9 +164,9 @@ export function Reports() {
   ];
 
   const handleConfirmData = () => {
-    if (isTimesheetMode) {
+    if (reportType === "timesheet") {
        if (!teacherName || !teacherHours) return;
-    } else {
+    } else if (reportType === "nutrition") {
        if (!sickCount || !compCount) return;
     }
     
@@ -115,18 +175,33 @@ export function Reports() {
     
     setTimeout(() => {
       const today = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
-      let result = template
+      const activeTemplate = getInitialTemplate(reportType);
+      let result = activeTemplate
         .replace(/\{\{\s*doc_number\s*\}\}/g, "145/2-A")
         .replace(/\{\{\s*current_date\s*\}\}/g, today)
         .replace(/\{\{\s*school_name\s*\}\}/g, "AQBOBEK LYCEUM")
         .replace(/\{\{\s*director_name\s*\}\}/g, "Иванов А.П.")
         .replace(/\{\{\s*report_period\s*\}\}/g, "апрель 2026 года");
 
-      if (isTimesheetMode) {
+      if (reportType === "timesheet") {
          result = result
            .replace(/\{\{\s*target_teacher\s*\}\}/g, teacherName)
            .replace(/\{\{\s*base_hours\s*\}\}/g, "120")
            .replace(/\{\{\s*actual_hours\s*\}\}/g, teacherHours);
+      } else if (reportType === "load") {
+          const rows = TEACHER_ASSIGNMENTS.map(t => {
+              const subjectsStr = Object.entries(t.subjects).map(([subj, classes]) => {
+                  const clsStr = Object.entries(classes as any).map(([cls, hrs]) => `${cls}: ${hrs}ч`).join(", ");
+                  return `${subj} (${clsStr})`;
+              }).join("; ");
+              return `| ${t.name} | ${Object.keys(t.subjects).join(", ")} | ${subjectsStr} | ${t.weekly_hours} ч. |`;
+          }).join("\n");
+          result = result.replace(/\{\{\s*load_table_rows\s*\}\}/g, rows);
+      } else if (reportType === "bullying") {
+          // ═══ Подстановка данных по буллингу ═══
+          result = result
+            .replace(/\{\{\s*bullying_count\s*\}\}/g, "1")
+            .replace(/\{\{\s*total_bullying_cases\s*\}\}/g, bullyingCount.toString());
       } else {
          const totalVseobuch = 250;
          const sick = parseInt(sickCount) || 0;
@@ -162,19 +237,57 @@ export function Reports() {
           <h1 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Отчеты</h1>
           <p className="text-sm text-gray-500 dark:text-slate-400 mt-1 font-medium">Аналитика и генерация справок</p>
         </div>
-        <div className="flex bg-gray-100 dark:bg-slate-800 p-1 rounded-xl border border-gray-200 dark:border-slate-700">
+        <div className="flex items-center gap-3">
           <button 
-            onClick={() => setActiveTab("analytics")} 
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black transition-all ${activeTab === "analytics" ? "bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}
+            onClick={() => {
+              const current = parseInt(localStorage.getItem("school_bullying_cases") || "12");
+              const next = current + 1;
+              localStorage.setItem("school_bullying_cases", next.toString());
+              
+              // Trigger notification
+              window.dispatchEvent(
+                new CustomEvent("ai-notification", {
+                  detail: {
+                    type: "warning",
+                    title: "⚠️ СИГНАЛ: ШКОЛЬНЫЙ БУЛЛИНГ",
+                    message: "Зафиксирован инцидент в 8Д классе. Психологу назначена задача.",
+                    route: "/reports",
+                    sectionName: "Безопасность",
+                    confidence: 98,
+                  },
+                })
+              );
+              
+              // Create a task
+              const tasks = JSON.parse(localStorage.getItem("ai_delegate_tasks") || "[]");
+              tasks.push({
+                id: Date.now().toString(),
+                assignTo: "Психолог (Ахметова)",
+                text: "Срочно провести беседу по случаю буллинга в 8Д классе",
+                status: "sent"
+              });
+              localStorage.setItem("ai_delegate_tasks", JSON.stringify(tasks));
+
+              window.dispatchEvent(new CustomEvent("bullying-incident"));
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-rose-600 hover:text-white transition-all border border-rose-200 dark:border-rose-900"
           >
-            <TrendingUp className="w-4 h-4" /> АНАЛИТИКА
+            <ShieldAlert className="w-4 h-4" /> Симуляция инцидента
           </button>
-          <button 
-            onClick={() => setActiveTab("ai_reports")} 
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black transition-all ${activeTab === "ai_reports" ? "bg-white dark:bg-slate-900 text-green-600 dark:text-green-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}
-          >
-            <Bot className="w-4 h-4" /> AI-ОТЧЕТЫ
-          </button>
+          <div className="flex bg-gray-100 dark:bg-slate-800 p-1 rounded-xl border border-gray-200 dark:border-slate-700">
+            <button 
+              onClick={() => setActiveTab("analytics")} 
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black transition-all ${activeTab === "analytics" ? "bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}
+            >
+              <TrendingUp className="w-4 h-4" /> АНАЛИТИКА
+            </button>
+            <button 
+              onClick={() => setActiveTab("ai_reports")} 
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black transition-all ${activeTab === "ai_reports" ? "bg-white dark:bg-slate-900 text-green-600 dark:text-green-400 shadow-md" : "text-gray-500 hover:text-gray-700 dark:hover:text-slate-300"}`}
+            >
+              <Bot className="w-4 h-4" /> AI-ОТЧЕТЫ
+            </button>
+          </div>
         </div>
       </div>
 
@@ -221,13 +334,13 @@ export function Reports() {
             <div className="bg-gradient-to-br from-orange-500 to-red-600 dark:from-orange-600 dark:to-red-800 p-6 rounded-2xl shadow-lg shadow-orange-500/20 text-white transition-all transform hover:scale-[1.02]">
               <div className="flex items-center justify-between mb-4">
                 <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-sm">
-                  <Users className="w-6 h-6" />
+                  <ShieldAlert className="w-6 h-6" />
                 </div>
                 <TrendingUp className="w-5 h-5 opacity-75" />
               </div>
-              <p className="text-xs font-bold uppercase tracking-widest opacity-90">Посещаемость</p>
-              <p className="text-4xl font-black mt-1">93%</p>
-              <p className="text-[10px] font-bold uppercase tracking-widest opacity-80 mt-2 bg-white/10 px-2 py-1 rounded inline-block">+1.5% за месяц</p>
+              <p className="text-xs font-bold uppercase tracking-widest opacity-90">Инциденты буллинга</p>
+              <p className="text-4xl font-black mt-1">{bullyingCount}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest opacity-80 mt-2 bg-white/10 px-2 py-1 rounded inline-block">Внимание: {bullyingCount > 10 ? 'Требуется контроль' : 'Норма'}</p>
             </div>
           </div>
 
@@ -290,37 +403,63 @@ export function Reports() {
               <div className="flex-1 overflow-y-auto space-y-6 relative z-10 pr-2 custom-scrollbar">
                 {/* Сообщение 1: Приветствие */}
                 <div className="bg-white/5 border border-white/10 p-5 rounded-2xl rounded-tl-sm backdrop-blur-md">
-                  <p className="text-slate-200 text-sm leading-relaxed">
-                    Приветствую! Я загрузил шаблон <span className="font-bold text-indigo-400">«{isTimesheetMode ? "Табель рабочего времени" : "Справка об организации питания"}»</span>. Я готов подготовить отчет. 
+                  <p className="text-slate-200 text-sm leading-relaxed mb-4">
+                    Выберите тип документа, который необходимо подготовить:
                   </p>
+                  <div className="flex flex-col gap-2">
+                    {[
+                      { id: "nutrition", label: "Справка по питанию", icon: FileText },
+                      { id: "timesheet", label: "Табель времени", icon: Clock },
+                      { id: "load", label: "Учебная нагрузка (Hackathon)", icon: Users },
+                      { id: "bullying", label: "Отчет по буллингу", icon: ShieldAlert }
+                    ].map(t => (
+                      <button 
+                         key={t.id}
+                         onClick={() => {
+                            setReportType(t.id as any);
+                            setTemplate(getInitialTemplate(t.id));
+                            setAiState("idle");
+                            setGeneratedReport(null);
+                         }}
+                         className={`flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all border ${reportType === t.id ? 'bg-indigo-500 text-white border-indigo-400 shadow-lg shadow-indigo-500/30' : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'}`}
+                      >
+                         <t.icon className="w-4 h-4" />
+                         {t.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {aiState === "idle" && (
                   <div className="animate-in fade-in zoom-in duration-500 delay-300 fill-mode-both">
                     <button 
-                      onClick={() => setAiState("asking")}
-                      className="w-full relative group overflow-hidden bg-white/5 hover:bg-white/10 border border-indigo-500/30 p-5 rounded-2xl transition-all flex items-center justify-between"
+                      onClick={() => {
+                         if (reportType === "load" || reportType === "bullying") {
+                            handleConfirmData(); // Jump straight to generating for load
+                         } else {
+                            setAiState("asking");
+                         }
+                      }}
+                      className="w-full relative group overflow-hidden bg-indigo-600 hover:bg-indigo-500 text-white p-5 rounded-2xl transition-all flex items-center justify-between shadow-xl shadow-indigo-600/20"
                     >
-                      <div className="absolute inset-0 w-1/2 h-full bg-gradient-to-r from-transparent via-indigo-400/20 to-transparent skew-x-12 -translate-x-full group-hover:translate-x-[250%] transition-transform duration-1000"></div>
-                      <span className="font-bold text-indigo-300 uppercase tracking-widest text-xs relative z-10 block text-left">Запустить сбор данных</span>
-                      <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center group-hover:bg-indigo-500/40 transition-colors">
-                        <TrendingUp className="w-4 h-4 text-indigo-300" />
-                      </div>
+                      <span className="font-black uppercase tracking-widest text-xs relative z-10">Сгенерировать документ</span>
+                      <TrendingUp className="w-4 h-4 text-white relative z-10" />
                     </button>
                   </div>
                 )}
 
                 {/* Сообщение 2: Запрос данных */}
-                {aiState !== "idle" && (
+                {aiState === "asking" && (
                   <div className="bg-indigo-900/40 border border-indigo-500/30 p-5 rounded-2xl rounded-tl-sm backdrop-blur-md animate-in slide-in-from-left-4 duration-500">
                     <p className="text-indigo-100 text-sm leading-relaxed mb-4">
-                      Мне не хватает "живых" данных на сегодняшний день. База пока <span className="text-rose-400 font-bold">не синхронизирована</span>. 
-                      <br/><br/>
-                      Пожалуйста, уточните вручную:
+                      {reportType === "bullying"
+                        ? "Зафиксирован инцидент. Уточните детали для служебной записки психологу:"
+                        : <>Мне не хватает "живых" данных на сегодняшний день. База пока <span className="text-rose-400 font-bold">не синхронизирована</span>. <br/><br/>Пожалуйста, уточните вручную:</>
+                      }
                     </p>
                     
                     <div className="space-y-4">
-                      {isTimesheetMode ? (
+                      {reportType === "timesheet" ? (
                         <>
                           <div>
                             <label className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-1 block">ФИО Преподавателя</label>
@@ -344,6 +483,18 @@ export function Reports() {
                               placeholder="Например, 134"
                             />
                           </div>
+                        </>
+                      ) : reportType === "bullying" ? (
+                        <>
+                          <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-4">
+                            <p className="text-rose-300 text-xs font-bold uppercase tracking-widest mb-3">🛡️ Автоматически заполнено системой</p>
+                            <div className="space-y-2 text-sm text-slate-300 font-mono">
+                              <div>Инцидентов за период: <span className="text-white font-black">1</span></div>
+                              <div>Всего за год: <span className="text-white font-black">{bullyingCount}</span></div>
+                              <div>Ответственный: <span className="text-white font-black">Психолог (Ахметова)</span></div>
+                            </div>
+                          </div>
+                          <p className="text-indigo-300/70 text-xs font-medium">Отчет будет сформирован автоматически. Дополнительных данных не требуется.</p>
                         </>
                       ) : (
                         <>
@@ -415,7 +566,7 @@ export function Reports() {
                 <div className="flex items-center justify-between mb-6">
                   <div>
                     <h3 className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-widest flex items-center gap-2">
-                      <FileText className="w-5 h-5 text-blue-500" /> Шаблон: {isTimesheetMode ? "Учет времени" : "Питание"}
+                      <FileText className="w-5 h-5 text-blue-500" /> Шаблон: {reportType === "timesheet" ? "Учет времени" : reportType === "load" ? "Нагрузка" : reportType === "bullying" ? "Буллинг" : "Питание"}
                     </h3>
                   </div>
                   <button className="bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors">
@@ -456,10 +607,54 @@ export function Reports() {
                     <FileCheck className="w-5 h-5 text-emerald-500" /> Итоговый Документ
                   </h3>
                   <div className="flex gap-2">
-                    <button className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:bg-emerald-200 dark:hover:bg-emerald-900/50 shadow-sm">
+                    <button 
+                      onClick={() => {
+                        if (!generatedReport) return;
+                        const formatForPrint = (text: string) => {
+                          const lines = text.split('\n');
+                          let html = '';
+                          let inTable = false;
+                          let isHeaderDone = false;
+                          for (const line of lines) {
+                            const trimmed = line.trim();
+                            if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+                              const cells = trimmed.split('|').filter(c => c.trim() !== '');
+                              if (cells.every(c => /^[\s\-:]+$/.test(c))) { isHeaderDone = true; continue; }
+                              if (!inTable) { html += '<table>'; inTable = true; }
+                              const tag = !isHeaderDone ? 'th' : 'td';
+                              html += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+                            } else {
+                              if (inTable) { html += '</table>'; inTable = false; isHeaderDone = false; }
+                              if (trimmed === '') { html += '<br>'; }
+                              else { html += `<p>${trimmed}</p>`; }
+                            }
+                          }
+                          if (inTable) html += '</table>';
+                          return html;
+                        };
+                        const printWindow = window.open('', '_blank');
+                        if (!printWindow) return;
+                        printWindow.document.write(`<html><head><title>Отчет — AQBOBEK AI</title>
+                          <style>
+                            body { font-family: 'Times New Roman', serif; font-size: 13px; line-height: 1.6; padding: 40px 50px; color: #111; }
+                            p { margin: 2px 0; }
+                            table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 11px; }
+                            th, td { border: 1px solid #333; padding: 6px 10px; text-align: left; vertical-align: top; }
+                            th { background: #e8e8e8; font-weight: bold; }
+                            @media print { body { padding: 15px 30px; } }
+                          </style></head>
+                          <body>${formatForPrint(generatedReport)}</body></html>`);
+                        printWindow.document.close();
+                        setTimeout(() => printWindow.print(), 400);
+                      }}
+                      className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:bg-emerald-200 dark:hover:bg-emerald-900/50 shadow-sm"
+                    >
                       Скачать PDF
                     </button>
-                    <button className="bg-gray-200 text-gray-700 dark:bg-slate-800 dark:text-slate-300 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:bg-gray-300 dark:hover:bg-slate-700 shadow-sm">
+                    <button 
+                      onClick={() => window.print()}
+                      className="bg-gray-200 text-gray-700 dark:bg-slate-800 dark:text-slate-300 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:bg-gray-300 dark:hover:bg-slate-700 shadow-sm"
+                    >
                       Печать
                     </button>
                   </div>

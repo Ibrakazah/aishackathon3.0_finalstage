@@ -22,7 +22,8 @@ import {
   Wifi,
   WifiOff,
   Wand2,
-  MessageCircle
+  MessageCircle,
+  Wrench
 } from "lucide-react";
 import { WhatsAppConnector } from "./WhatsAppConnector";
 import { ChatBot } from "./ChatBot";
@@ -200,7 +201,7 @@ export function Layout() {
     { path: "/reports", label: "Отчеты", icon: FileText },
     { path: "/calendar", label: "Календарь директора", icon: CalendarDays },
     { path: "/teacher-view", label: "Расписание учителей", icon: Users },
-    { path: "/ai-chat", label: "AI Задачи & Чат", icon: Brain },
+    { path: "/technician-view", label: "Кабинет техников", icon: Wrench },
   ];
 
   const toggleTheme = () => {

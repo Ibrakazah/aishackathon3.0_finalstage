@@ -12,6 +12,7 @@ import { StaffSchedule } from "./components/StaffSchedule";
 import { ScheduleGenerator } from "./components/ScheduleGenerator";
 import { ChatBot } from "./components/ChatBot";
 import { TeacherView } from "./components/TeacherView";
+import { TechnicianView } from "./components/TechnicianView";
 
 export const router = createBrowserRouter([
   { path: "/staff/:name", Component: StaffSchedule }, // Secret standalone layout
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
       { path: "chat-bot", Component: ChatBot },
       { path: "schedule-generator", Component: ScheduleGenerator },
       { path: "teacher-view", Component: TeacherView },
+      { path: "technician-view", Component: TechnicianView },
     ],
   },
 ]);
